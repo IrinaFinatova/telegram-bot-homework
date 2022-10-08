@@ -4,7 +4,8 @@ import sys
 import time
 import requests
 import telegram
-from exception import *
+from exception import RequestAPINotOK, HomeworkDictNotExist,\
+    HomeworkDictEmpty, HomeworkDictTypeError, StatusNotExist, RequestException
 from typing import Union, Dict, List
 from dotenv import load_dotenv
 from logging import StreamHandler
