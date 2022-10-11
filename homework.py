@@ -2,22 +2,24 @@ import logging
 import os
 import sys
 import time
+from http import HTTPStatus
+from logging import StreamHandler
+from typing import Dict, List, Union
+
 import requests
 import telegram
-from exception import RequestAPINotOK, HomeworkDictNotExist,\
-    HomeworkDictEmpty, HomeworkDictTypeError, StatusNotExist, RequestException
-from typing import Union, Dict, List
 from dotenv import load_dotenv
-from logging import StreamHandler
 
+from exception import (HomeworkDictEmpty, HomeworkDictNotExist,
+                       RequestAPINotOK, RequestApiNotWork, RequestException,
+                       StatusNotExist)
 
 load_dotenv()
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
-
-RETRY_TIME = 6
+RETRY_TIME = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
@@ -37,17 +39,20 @@ logger.addHandler(handler)
 
 def check_tokens() -> bool:
     """Проверка доступности токенов,необходимых для работы бота."""
-    if not (PRACTICUM_TOKEN and TELEGRAM_TOKEN and TELEGRAM_CHAT_ID):
-        return False
-    return True
+    return all((PRACTICUM_TOKEN, TELEGRAM_TOKEN, TELEGRAM_CHAT_ID))
 
 
 def get_api_answer(current_timestamp: int) -> Dict[str, Union[str, int]]:
     """Запрос к API Яндекс и возврат запроса в формате словаря."""
     timestamp = current_timestamp or int(time.time())
     params = {'from_date': timestamp}
-    response = requests.get(ENDPOINT, headers=HEADERS, params=params)
-    if response.status_code != 200:
+    logger.info('Начинаем запрос к API')
+    try:
+        response = requests.get(ENDPOINT, headers=HEADERS, params=params)
+        logger.info('Получен запрос с API')
+    except RequestException:
+        raise RequestApiNotWork('API не работает')
+    if response.status_code != HTTPStatus.OK:
         raise RequestAPINotOK(
             f'Статус ответа API response {response.status_code}')
     return response.json()
@@ -56,17 +61,20 @@ def get_api_answer(current_timestamp: int) -> Dict[str, Union[str, int]]:
 def check_response(
         response: Dict[str, Union[str, int]]) -> List[Union[str, int]]:
     """Возврат списка доступных ДР из ответа API по ключу 'homeworks'."""
-    if not response['homeworks']:
-        raise HomeworkDictEmpty('Нет сданной текущей ДР.')
-    if type(response['homeworks']) != list:
-        raise HomeworkDictTypeError('В ответе API нет списка ДР')
-    return response['homeworks']
+    if not isinstance(response, Dict):
+        raise TypeError('Ответ API не содержит словарь')
+    if 'current_date' not in response and 'homeworks' not in response:
+        raise HomeworkDictEmpty('В словаре ответа API нет нужных ключей!')
+    homeworks = response.get('homeworks')
+    if not isinstance(homeworks, List):
+        raise TypeError('В ответе API нет списка ДР')
+    return homeworks
 
 
 def parse_status(homework: Dict[str, Union[str, int]]) -> str:
     """Формирование сообщения для бота о текущем статусе домашней работы."""
-    if 'homework_name' and 'status' not in homework:
-        raise HomeworkDictNotExist('Нет нужных ключей в списке ДР')
+    if 'homework_name' not in homework and 'status' not in homework:
+        raise HomeworkDictNotExist('Неправильные атрибуты домашней работы!')
     homework_name = homework['homework_name']
     homework_status = homework['status']
     if homework_status not in HOMEWORK_STATUSES:
@@ -75,50 +83,44 @@ def parse_status(homework: Dict[str, Union[str, int]]) -> str:
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
-def send_message(bot: telegram.Bot, message: str) -> None:
+def send_message(bot: telegram.Bot, message: str):
     """Непосредственно отправка сообщения ботом."""
-    return bot.send_message(TELEGRAM_CHAT_ID, message)
-
-
-cache = []
+    bot.send_message(TELEGRAM_CHAT_ID, message)
 
 
 def main() -> None:
     """Основная логика работы бота."""
     if not check_tokens():
         logging.critical('Нет токена! Бот не может работать')
-        sys.exit()
+        sys.exit('Поищите ваши токены!')
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     # current_timestamp = 1663440442
     current_timestamp = int(time.time())
+    cache: List[str] = []
     while True:
         try:
-            logging.info('Начали!')
+            logger.info('Начали!')
             response = get_api_answer(current_timestamp)
-            homework = check_response(response)[0]
-            message = parse_status(homework)
-            if message not in cache:
-                send_message(bot, message)
-                logger.info('Сообщение отправлено')
+            homework = check_response(response)
+            if homework:
+                message = parse_status(homework[0])
+                logger.info(f'Сообщение отправлено:\n {message}')
             else:
-                cache.pop()
-        except RequestException as error:
+                message = 'Пока нет сданной текущей домашней работы!'
+                logger.info('Сообщение об отсутствии ДР отправлено.')
+            send_message(bot, message)
+        except (RequestException, TypeError) as error:
             message = f'Сбой в работе программы: {error}'
-            if message not in cache:
-                logger.error(message, exc_info=True)
-                send_message(bot, message)
-            else:
-                cache.pop()
+            logger.error(message, exc_info=True)
+            send_message(bot, message)
         except Exception as error:
             message = f'Критическая ошибка {error}'
-            if message not in cache:
-                logger.critical(message, exc_info=True)
-                send_message(bot, message)
-            else:
-                cache.pop()
+            logger.critical(message, exc_info=True)
         finally:
-            time.sleep(RETRY_TIME)
+            if message in cache:
+                cache.pop()
             cache.append(message)
+            time.sleep(RETRY_TIME)
 
 
 if __name__ == '__main__':
