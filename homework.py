@@ -93,26 +93,27 @@ def main() -> None:
     if not check_tokens():
         logging.critical('Нет токена! Бот не может работать')
         sys.exit('Поищите ваши токены!')
+    logger.info('Начали!')
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
     # current_timestamp = 1663440442
     current_timestamp = int(time.time())
     cache: List[str] = []
     while True:
         try:
-            logger.info('Начали!')
             response = get_api_answer(current_timestamp)
             homework = check_response(response)
             if homework:
                 message = parse_status(homework[0])
-                logger.info(f'Сообщение отправлено:\n {message}')
             else:
                 message = 'Пока нет сданной текущей домашней работы!'
-                logger.info('Сообщение об отсутствии ДР отправлено.')
-            send_message(bot, message)
+            if message not in cache:
+                send_message(bot, message)
+                logger.info(f'Сообщение отправлено:\n {message}')
         except (RequestException, TypeError) as error:
             message = f'Сбой в работе программы: {error}'
             logger.error(message, exc_info=True)
-            send_message(bot, message)
+            if message not in cache:
+                send_message(bot, message)
         except Exception as error:
             message = f'Критическая ошибка {error}'
             logger.critical(message, exc_info=True)
