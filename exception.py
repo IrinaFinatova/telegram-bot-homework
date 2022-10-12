@@ -22,3 +22,5 @@ class StatusNotExist(RequestException):
     pass
 
 
+class TelegramNotWork(Exception):
+    pass

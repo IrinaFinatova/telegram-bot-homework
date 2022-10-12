@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 
 from exception import (HomeworkDictEmpty, HomeworkDictNotExist,
                        RequestAPINotOK, RequestApiNotWork, RequestException,
-                       StatusNotExist)
+                       StatusNotExist, TelegramNotWork)
 
 load_dotenv()
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
@@ -63,7 +63,7 @@ def check_response(
     """Возврат списка доступных ДР из ответа API по ключу 'homeworks'."""
     if not isinstance(response, Dict):
         raise TypeError('Ответ API не содержит словарь')
-    if 'current_date' not in response and 'homeworks' not in response:
+    if 'current_date' not in response or 'homeworks' not in response:
         raise HomeworkDictEmpty('В словаре ответа API нет нужных ключей!')
     homeworks = response.get('homeworks')
     if not isinstance(homeworks, List):
@@ -73,7 +73,7 @@ def check_response(
 
 def parse_status(homework: Dict[str, Union[str, int]]) -> str:
     """Формирование сообщения для бота о текущем статусе домашней работы."""
-    if 'homework_name' not in homework and 'status' not in homework:
+    if 'homework_name' not in homework or 'status' not in homework:
         raise HomeworkDictNotExist('Неправильные атрибуты домашней работы!')
     homework_name = homework['homework_name']
     homework_status = homework['status']
@@ -85,13 +85,19 @@ def parse_status(homework: Dict[str, Union[str, int]]) -> str:
 
 def send_message(bot: telegram.Bot, message: str):
     """Непосредственно отправка сообщения ботом."""
-    bot.send_message(TELEGRAM_CHAT_ID, message)
+    try:
+        logger.info('Начинаем отправку сообщения!')
+        bot.send_message(TELEGRAM_CHAT_ID, message)
+    except Exception:
+        raise TelegramNotWork('Телеграмм не работает!')
+    else:
+        logger.info('Сообщение отправлено!')
 
 
 def main() -> None:
     """Основная логика работы бота."""
     if not check_tokens():
-        logging.critical('Нет токена! Бот не может работать')
+        logger.critical('Нет токена! Бот не может работать')
         sys.exit('Поищите ваши токены!')
     logger.info('Начали!')
     bot = telegram.Bot(token=TELEGRAM_TOKEN)
@@ -106,20 +112,18 @@ def main() -> None:
                 message = parse_status(homework[0])
             else:
                 message = 'Пока нет сданной текущей домашней работы!'
-            if message not in cache:
-                send_message(bot, message)
-                logger.info(f'Сообщение отправлено:\n {message}')
         except (RequestException, TypeError) as error:
             message = f'Сбой в работе программы: {error}'
             logger.error(message, exc_info=True)
-            if message not in cache:
-                send_message(bot, message)
         except Exception as error:
             message = f'Критическая ошибка {error}'
             logger.critical(message, exc_info=True)
         finally:
             if message in cache:
                 cache.pop()
+            else:
+                send_message(bot, message)
+                logger.info(f'Отправленное сообщение: {message}')
             cache.append(message)
             time.sleep(RETRY_TIME)
 
